@@ -1,26 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { calcSpeed, getNearestLocation } from '../utils/helpers';
+import { getNearestLocation } from '../utils/helpers';
 
-const ISS_LOCATION_URL = 'https://api.open-notify.org/iss-now.json';
+// wheretheiss.at has full CORS support — works in production
+const ISS_POSITION_URL = 'https://api.wheretheiss.at/v1/satellites/25544';
+// open-notify for astronauts (supports HTTPS + CORS)
 const ISS_PEOPLE_URL = 'https://api.open-notify.org/astros.json';
-const PROXY_LOCATION = '/api/iss/iss-now.json';
-const PROXY_PEOPLE = '/api/iss/astros.json';
-
-async function fetchISS(url, fallback) {
-  try {
-    const r = await fetch(url);
-    if (!r.ok) throw new Error();
-    return await r.json();
-  } catch {
-    try {
-      const r2 = await fetch(fallback);
-      if (!r2.ok) throw new Error();
-      return await r2.json();
-    } catch {
-      throw new Error('ISS API unreachable');
-    }
-  }
-}
 
 export function useISS() {
   const [position, setPosition] = useState(null);
@@ -31,27 +15,27 @@ export function useISS() {
   const [people, setPeople] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const prevPos = useRef(null);
 
   const fetchPosition = useCallback(async () => {
     try {
-      const data = await fetchISS(PROXY_LOCATION, ISS_LOCATION_URL);
-      const lat = parseFloat(data.iss_position.latitude);
-      const lon = parseFloat(data.iss_position.longitude);
+      const r = await fetch(ISS_POSITION_URL);
+      if (!r.ok) throw new Error(`ISS API error: ${r.status}`);
+      const data = await r.json();
+
+      const lat = parseFloat(data.latitude);
+      const lon = parseFloat(data.longitude);
       const ts = data.timestamp || Math.floor(Date.now() / 1000);
+      // velocity is already in km/h from wheretheiss.at
+      const spd = Math.round(data.velocity || 0);
       const pos = { lat, lon, ts };
 
-      if (prevPos.current) {
-        const spd = calcSpeed(prevPos.current, pos);
-        setSpeed(Math.round(spd));
-        setSpeedHistory(prev => [...prev.slice(-29), {
-          time: new Date(ts * 1000).toLocaleTimeString(),
-          speed: Math.round(spd)
-        }]);
-      }
-      prevPos.current = pos;
       setPosition(pos);
+      setSpeed(spd);
       setHistory(prev => [...prev.slice(-14), pos]);
+      setSpeedHistory(prev => [...prev.slice(-29), {
+        time: new Date(ts * 1000).toLocaleTimeString(),
+        speed: spd
+      }]);
       setLocation(getNearestLocation(lat, lon));
       setError(null);
     } catch (e) {
@@ -63,9 +47,13 @@ export function useISS() {
 
   const fetchPeople = useCallback(async () => {
     try {
-      const data = await fetchISS(PROXY_PEOPLE, ISS_PEOPLE_URL);
+      const r = await fetch(ISS_PEOPLE_URL);
+      if (!r.ok) throw new Error();
+      const data = await r.json();
       setPeople(data);
-    } catch {}
+    } catch {
+      // silently fail — non-critical
+    }
   }, []);
 
   useEffect(() => {
