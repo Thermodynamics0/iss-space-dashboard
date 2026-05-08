@@ -1,12 +1,20 @@
 import https from 'https';
+import http from 'http';
 
-// Use built-in https module (works in all Node versions, bypasses fetch issues)
-function get(url) {
+// Fetch via built-in http/https module
+function get(url, timeoutMs = 6000) {
   return new Promise((resolve, reject) => {
-    const req = https.get(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 ISS-Dashboard/1.0' },
-      timeout: 5000,
+    const client = url.startsWith('https') ? https : http;
+    const req = client.get(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; ISSDashboard/1.0)',
+        'Accept': 'application/json',
+      },
     }, (res) => {
+      // Follow redirects
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return get(res.headers.location, timeoutMs).then(resolve).catch(reject);
+      }
       let data = '';
       res.on('data', chunk => (data += chunk));
       res.on('end', () => {
@@ -14,26 +22,25 @@ function get(url) {
           try { resolve(JSON.parse(data)); }
           catch (e) { reject(new Error('Invalid JSON')); }
         } else {
-          reject(new Error(`HTTP ${res.statusCode}`));
+          reject(new Error(`HTTP ${res.statusCode}: ${data.slice(0, 100)}`));
         }
       });
     });
+    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error('timeout')); });
     req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
   });
 }
 
-// Mathematical ISS position approximation
-// ISS: 51.6° inclination, ~92.68 min period, ~408 km altitude
+// Mathematical ISS position (real orbital parameters)
 function getMathematicalISS() {
   const now = Math.floor(Date.now() / 1000);
-  const PERIOD = 92.68 * 60; // seconds
+  const PERIOD = 92.68 * 60;
   const INCLINATION = 51.6 * (Math.PI / 180);
   const t = now % PERIOD;
   const angle = (2 * Math.PI * t) / PERIOD;
   const lat = Math.asin(Math.sin(INCLINATION) * Math.sin(angle)) * (180 / Math.PI);
-  const lonOffset = ((now * (360 / 86164)) % 360); // Earth rotation
-  const lon = (((angle * 180) / Math.PI) - lonOffset + 180) % 360 - 180;
+  const lonRaw = (angle * 180) / Math.PI - ((now / 86164) * 360 % 360);
+  const lon = ((lonRaw + 180) % 360) - 180;
   return {
     latitude: parseFloat(lat.toFixed(4)),
     longitude: parseFloat(lon.toFixed(4)),
@@ -47,9 +54,9 @@ export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 's-maxage=10, stale-while-revalidate=5');
 
-  // Try open-notify.org
+  // 1. Try open-notify directly
   try {
-    const data = await get('https://api.open-notify.org/iss-now.json');
+    const data = await get('http://api.open-notify.org/iss-now.json');
     return res.json({
       latitude: parseFloat(data.iss_position.latitude),
       longitude: parseFloat(data.iss_position.longitude),
@@ -57,14 +64,33 @@ export default async function handler(req, res) {
       velocity: 27600,
       source: 'open-notify',
     });
-  } catch (e) {}
+  } catch (e1) {
+    console.log('open-notify failed:', e1.message);
+  }
 
-  // Try wheretheiss.at
+  // 2. Try wheretheiss.at
   try {
     const data = await get('https://api.wheretheiss.at/v1/satellites/25544');
     return res.json({ ...data, source: 'wheretheiss' });
-  } catch (e) {}
+  } catch (e2) {
+    console.log('wheretheiss failed:', e2.message);
+  }
 
-  // Mathematical model fallback — always works
+  // 3. Try corsproxy.io as relay
+  try {
+    const encoded = encodeURIComponent('https://api.open-notify.org/iss-now.json');
+    const data = await get(`https://corsproxy.io/?${encoded}`);
+    return res.json({
+      latitude: parseFloat(data.iss_position.latitude),
+      longitude: parseFloat(data.iss_position.longitude),
+      timestamp: data.timestamp,
+      velocity: 27600,
+      source: 'corsproxy-open-notify',
+    });
+  } catch (e3) {
+    console.log('corsproxy failed:', e3.message);
+  }
+
+  // 4. Mathematical model — always works
   return res.json(getMathematicalISS());
 }
