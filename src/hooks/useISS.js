@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { getNearestLocation } from '../utils/helpers';
 
-// wheretheiss.at has full CORS support — works in production
-const ISS_POSITION_URL = 'https://api.wheretheiss.at/v1/satellites/25544';
-// open-notify for astronauts (supports HTTPS + CORS)
-const ISS_PEOPLE_URL = 'https://api.open-notify.org/astros.json';
+// Our own Vercel serverless proxies — no CORS, no rate limits from browser
+const ISS_POSITION_URL = '/api/iss';
+const ISS_PEOPLE_URL = '/api/astros';
 
 export function useISS() {
   const [position, setPosition] = useState(null);
